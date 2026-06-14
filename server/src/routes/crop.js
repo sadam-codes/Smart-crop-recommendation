@@ -168,13 +168,14 @@ router.post('/predict', async (req, res) => {
     let locationRequest = null;
     let weatherFromApi = null;
 
+    const latVal = parseNum(lat, null);
+    const lonVal = parseNum(lon, null);
+    const hasCoords = Number.isFinite(latVal) && Number.isFinite(lonVal);
+    const c = typeof city === 'string' ? city.trim() : '';
+    const cc = typeof countryCode === 'string' && countryCode.trim() ? countryCode.trim() : 'PK';
+
     const hasAllWeather = [t, h, r].every((x) => Number.isFinite(x));
     if (!hasAllWeather) {
-      const latVal = parseNum(lat, null);
-      const lonVal = parseNum(lon, null);
-      const hasCoords = Number.isFinite(latVal) && Number.isFinite(lonVal);
-      const c = typeof city === 'string' ? city.trim() : '';
-      const cc = typeof countryCode === 'string' && countryCode.trim() ? countryCode.trim() : 'PK';
       if (!hasCoords && !c) {
         return res.status(400).json({
           error:
@@ -199,6 +200,12 @@ router.post('/predict', async (req, res) => {
           }
         : { city: c, countryCode: cc };
       weatherFromApi = w.weatherDetails || null;
+    } else if (hasCoords || c) {
+      // Live API: client already sent weather snapshot + location (do not mark as manual)
+      weatherSource = 'api';
+      locationRequest = hasCoords
+        ? { lat: latVal, lon: lonVal, city: c || null, countryCode: cc }
+        : { city: c, countryCode: cc };
     }
 // final data that goes to the model
     const input = {

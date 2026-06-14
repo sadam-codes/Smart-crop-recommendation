@@ -394,8 +394,12 @@ export default function App() {
       const lw = snap?.liveWeather ?? liveWeatherPreview
       body.lat = snap?.geoLat ?? geoLat
       body.lon = snap?.geoLon ?? geoLon
-      if (snap?.city) body.city = snap.city
-      if (snap?.countryCode) body.countryCode = snap.countryCode
+      const cityName =
+        snap?.liveWeather?.cityName || snap?.city || lw?.cityName || city
+      const cc =
+        snap?.liveWeather?.countryCode || snap?.countryCode || lw?.countryCode || countryCode
+      if (cityName) body.city = String(cityName).trim()
+      if (cc) body.countryCode = String(cc).trim().toUpperCase()
       if (hasLiveWeatherPreview(lw)) {
         body.temperature = lw.temperature
         body.humidity = lw.humidity

@@ -39,12 +39,15 @@ function Cell({ label, value }) {
 
 function locationLabel(result) {
   if (!result) return '—'
-  if (result.weatherSource === 'manual') return 'Manual'
   const lr = result.locationRequest
   if (lr?.city) {
     const cc = lr.countryCode || ''
     return cc ? `${lr.city}, ${cc}` : lr.city
   }
+  if (lr && Number.isFinite(lr.lat) && Number.isFinite(lr.lon)) {
+    return `${Number(lr.lat).toFixed(2)}, ${Number(lr.lon).toFixed(2)}`
+  }
+  if (result.weatherSource === 'manual') return 'Manual'
   return '—'
 }
 
