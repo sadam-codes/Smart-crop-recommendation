@@ -72,7 +72,7 @@ export default function SoilSection({
         <input
           ref={fileRef}
           type="file"
-          accept="image/*"
+          accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
           capture="environment"
           className="sr-only"
           onChange={onFileChange}

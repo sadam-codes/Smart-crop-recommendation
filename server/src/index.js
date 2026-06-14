@@ -34,6 +34,13 @@ app.use((err, req, res, next) => {
 });
 
 async function start() {
+  const soilScan = require('./services/soilScan');
+  console.log(
+    soilScan.isConfigured()
+      ? 'Soil scan: GROQ_API_KEY loaded.'
+      : 'Soil scan: GROQ_API_KEY missing in server/.env — photo upload disabled.',
+  );
+
   cropModel.initModel().then(() => {
     const s = cropModel.getStatus();
     if (s.ready) {

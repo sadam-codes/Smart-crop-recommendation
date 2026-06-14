@@ -16,13 +16,56 @@ const BOUNDS = {
 let cachedClient = null;
 let cachedKey = null;
 
+function resetClient() {
+  cachedClient = null;
+  cachedKey = null;
+}
+
 function getClient() {
   const key = (process.env.GROQ_API_KEY || '').trim();
-  if (!key) return null;
+  if (!key) {
+    resetClient();
+    return null;
+  }
   if (cachedClient && cachedKey === key) return cachedClient;
   cachedClient = new OpenAI({ apiKey: key, baseURL: GROQ_BASE_URL });
   cachedKey = key;
   return cachedClient;
+}
+
+function groqErrorMessage(err) {
+  const status = err?.status;
+  if (status === 401) {
+    return (
+      'Groq API key is invalid or expired (401). Open server/.env, set a valid GROQ_API_KEY from console.groq.com/keys, ' +
+      'then restart the server (stop and run npm run dev again in the server folder).'
+    );
+  }
+  if (status === 429) {
+    return 'Groq rate limit reached. Wait about a minute and try again.';
+  }
+  if (status === 400) {
+    const msg = String(err?.message || '');
+    if (/image/i.test(msg)) {
+      return 'Could not read this image. Use a clear JPG or PNG photo of the soil report (HEIC/iPhone photos are not supported — save as JPEG first).';
+    }
+  }
+  return err?.message || 'Soil scan failed.';
+}
+
+function wrapGroqError(err) {
+  if (err?.status === 401) resetClient();
+  const wrapped = new Error(groqErrorMessage(err));
+  wrapped.code = err?.status === 401 ? 'GROQ_UNAUTHORIZED' : 'GROQ_API';
+  return wrapped;
+}
+
+const ALLOWED_MIME = /^image\/(jpeg|jpg|png|webp|gif)$/i;
+
+function normalizeMime(mimeType) {
+  const m = String(mimeType || '').toLowerCase().split(';')[0].trim();
+  if (m === 'image/jpg') return 'image/jpeg';
+  return m;
 }
 
 function isConfigured() {
@@ -58,15 +101,33 @@ function parseJsonFromModel(text) {
 async function extractSoilFromImage(buffer, mimeType) {
   const client = getClient();
   if (!client) {
-    const err = new Error('Soil photo scan is not configured. Add GROQ_API_KEY to server/.env.');
+    const err = new Error(
+      'Soil photo scan is not configured. Add GROQ_API_KEY to server/.env and restart the server.',
+    );
     err.code = 'GROQ_NOT_CONFIGURED';
     throw err;
   }
 
-  const base64 = buffer.toString('base64');
-  const dataUrl = `data:${mimeType || 'image/jpeg'};base64,${base64}`;
+  if (!buffer?.length) {
+    throw new Error('Empty image file. Choose a soil report photo and try again.');
+  }
+  if (buffer.length > 6 * 1024 * 1024) {
+    throw new Error('Image is too large (max 6 MB). Use a smaller photo or crop the report.');
+  }
 
-  const completion = await client.chat.completions.create({
+  const mime = normalizeMime(mimeType);
+  if (!ALLOWED_MIME.test(mime)) {
+    throw new Error(
+      'Unsupported image type. Save the photo as JPG or PNG (iPhone HEIC is not supported — use Share → Save as JPEG).',
+    );
+  }
+
+  const base64 = buffer.toString('base64');
+  const dataUrl = `data:${mime};base64,${base64}`;
+
+  let completion;
+  try {
+    completion = await client.chat.completions.create({
     model: VISION_MODEL,
     temperature: 0.1,
     max_tokens: 500,
@@ -99,6 +160,9 @@ async function extractSoilFromImage(buffer, mimeType) {
       },
     ],
   });
+  } catch (err) {
+    throw wrapGroqError(err);
+  }
 
   const rawText = completion.choices?.[0]?.message?.content?.trim();
   if (!rawText) {

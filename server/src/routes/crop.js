@@ -11,8 +11,14 @@ const soilUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 8 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    if (/^image\/(jpeg|jpg|png|webp|gif|heic|heif)$/i.test(file.mimetype)) cb(null, true);
-    else cb(new Error('Only image files (JPG, PNG, WebP) are allowed.'));
+    if (/^image\/(jpeg|jpg|png|webp|gif)$/i.test(file.mimetype)) cb(null, true);
+    else {
+      cb(
+        new Error(
+          'Only JPG or PNG images are allowed. iPhone HEIC is not supported — save the photo as JPEG first.',
+        ),
+      );
+    }
   },
 });
 
@@ -84,7 +90,13 @@ router.post('/soil-scan', soilUpload.single('image'), async (req, res) => {
     console.error('soil-scan:', err.message || err);
     const code = err.code;
     const status =
-      code === 'GROQ_NOT_CONFIGURED' ? 503 : err.message?.includes('image') ? 400 : 502;
+      code === 'GROQ_NOT_CONFIGURED'
+        ? 503
+        : code === 'GROQ_UNAUTHORIZED'
+          ? 401
+          : /image|Unsupported|Empty|too large/i.test(err.message || '')
+            ? 400
+            : 502;
     res.status(status).json({ error: err.message || 'Soil scan failed.' });
   }
 });
