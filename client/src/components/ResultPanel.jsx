@@ -69,11 +69,11 @@ export default function ResultPanel({ result, preview, errorMessage, onTryAgain 
     [lw.temperature, lw.humidity, lw.rainfall].every((x) => typeof x === 'number' && Number.isFinite(x))
 
   const gridTemp = crop
-    ? fmt(input.temperature, 2)
+    ? fmt(input.temperature, 1)
     : pv.weatherMode === 'manual'
-      ? previewCell(pv.temperature, 2)
+      ? previewCell(pv.temperature, 1)
       : hasLivePreview
-        ? fmt(lw.temperature, 2)
+        ? fmt(lw.temperature, 1)
         : '—'
   const gridHum = crop
     ? fmt(input.humidity, 0)
@@ -83,11 +83,11 @@ export default function ResultPanel({ result, preview, errorMessage, onTryAgain 
         ? fmt(lw.humidity, 0)
         : '—'
   const gridRain = crop
-    ? fmt(input.rainfall, 2)
+    ? fmt(input.rainfall, 1)
     : pv.weatherMode === 'manual'
-      ? previewCell(pv.rainfall, 2)
+      ? previewCell(pv.rainfall, 1)
       : hasLivePreview
-        ? fmt(lw.rainfall, 2)
+        ? fmt(lw.rainfall, 1)
         : '—'
 
   const gridLoc = crop

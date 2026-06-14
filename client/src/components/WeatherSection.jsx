@@ -30,12 +30,14 @@ function FieldHint({ id, error }) {
  * @param {object} props
  * @param {Record<string, string | null | undefined>} [props.errors]
  * @param {'idle'|'detecting'|'loading'|'ready'|'error'} [props.locationStatus]
+ * @param {{ temperature?: number, humidity?: number, rainfall?: number } | null} [props.liveWeatherPreview]
  */
 export default function WeatherSection({
   weatherMode,
   setWeatherMode,
   locationStatus = 'idle',
   detectedLocation = '',
+  liveWeatherPreview = null,
   onRetryLocation,
   temperature,
   setTemperature,
@@ -62,6 +64,18 @@ export default function WeatherSection({
           : locationStatus === 'error'
             ? 'Location unavailable'
             : 'Waiting for location…'
+
+  const showLiveStats =
+    locationStatus === 'ready' &&
+    liveWeatherPreview &&
+    [liveWeatherPreview.temperature, liveWeatherPreview.humidity, liveWeatherPreview.rainfall].every(
+      (x) => typeof x === 'number' && Number.isFinite(x),
+    )
+
+  const fmt = (n, digits = 1) => {
+    const v = Number(n)
+    return Number.isFinite(v) ? v.toFixed(digits) : '—'
+  }
 
   return (
     <section className="rounded-3xl border border-[#eee] bg-white p-5 shadow-[0_4px_6px_rgba(0,0,0,0.05)] sm:p-6">
@@ -116,7 +130,7 @@ export default function WeatherSection({
               <p className={labelClass}>Your location</p>
               <p className="mt-1 text-base font-bold text-slate-900">{statusText}</p>
               <p className="mt-1 text-xs leading-relaxed text-stone-500">
-                We use your browser location, then load weather from OpenWeather on the server.
+                We use your browser GPS for location, then load current temperature &amp; humidity from Open-Meteo (closer to Google Weather). Rainfall is a 12-month estimate for the crop model.
               </p>
             </div>
             {(locationStatus === 'error' || locationStatus === 'ready') && (
@@ -130,6 +144,22 @@ export default function WeatherSection({
               </button>
             )}
           </div>
+          {showLiveStats ? (
+            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div className="rounded-2xl border border-[#D9E4C5] bg-white px-4 py-3">
+                <p className={labelClass}>Temperature</p>
+                <p className="mt-1 text-lg font-bold text-slate-900">{fmt(liveWeatherPreview.temperature, 1)} °C</p>
+              </div>
+              <div className="rounded-2xl border border-[#D9E4C5] bg-white px-4 py-3">
+                <p className={labelClass}>Humidity</p>
+                <p className="mt-1 text-lg font-bold text-slate-900">{fmt(liveWeatherPreview.humidity, 0)}%</p>
+              </div>
+              <div className="rounded-2xl border border-[#D9E4C5] bg-white px-4 py-3">
+                <p className={labelClass}>Rainfall (12 mo est.)</p>
+                <p className="mt-1 text-lg font-bold text-slate-900">{fmt(liveWeatherPreview.rainfall, 1)} mm</p>
+              </div>
+            </div>
+          ) : null}
           <FieldHint id="err-w-loc" error={eLoc} />
         </div>
       ) : (

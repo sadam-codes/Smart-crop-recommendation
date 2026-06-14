@@ -28,6 +28,73 @@ function requireApiKey(apiKey) {
   return key;
 }
 
+function formatDate(d) {
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Crop model expects seasonal/annual rainfall (mm), not current-hour rain.
+ * Uses Open-Meteo archive (last 12 months), capped to dataset bounds.
+ */
+async function fetchAnnualRainfallEstimate(lat, lon) {
+  const end = new Date();
+  const start = new Date(end);
+  start.setFullYear(start.getFullYear() - 1);
+  const url =
+    `https://archive-api.open-meteo.com/v1/archive?latitude=${encodeURIComponent(lat)}` +
+    `&longitude=${encodeURIComponent(lon)}&start_date=${formatDate(start)}` +
+    `&end_date=${formatDate(end)}&daily=precipitation_sum`;
+
+  try {
+    const res = await axios.get(url, { timeout: 15000, validateStatus: () => true });
+    const daily = res.data?.daily?.precipitation_sum;
+    if (!Array.isArray(daily) || daily.length === 0) return null;
+    const sum = daily.reduce((acc, v) => acc + (typeof v === 'number' && Number.isFinite(v) ? v : 0), 0);
+    if (!Number.isFinite(sum)) return null;
+    return Math.min(350, Math.max(0, Math.round(sum * 10) / 10));
+  } catch {
+    return null;
+  }
+}
+
+async function fetchOpenMeteoCurrent(lat, lon) {
+  const url =
+    `https://api.open-meteo.com/v1/forecast?latitude=${encodeURIComponent(lat)}` +
+    `&longitude=${encodeURIComponent(lon)}&current=temperature_2m,relative_humidity_2m&timezone=auto`;
+
+  try {
+    const res = await axios.get(url, { timeout: 15000, validateStatus: () => true });
+    const cur = res.data?.current;
+    if (!cur) return null;
+    const temperature =
+      typeof cur.temperature_2m === 'number' ? Math.round(cur.temperature_2m * 10) / 10 : null;
+    const humidity =
+      typeof cur.relative_humidity_2m === 'number' ? Math.round(cur.relative_humidity_2m) : null;
+    if (!Number.isFinite(temperature) || !Number.isFinite(humidity)) return null;
+    return { temperature, humidity, observedAt: typeof cur.time === 'string' ? cur.time : null };
+  } catch {
+    return null;
+  }
+}
+
+async function reverseGeocodeCity(apiKey, lat, lon) {
+  const url =
+    `https://api.openweathermap.org/geo/1.0/reverse?lat=${encodeURIComponent(lat)}` +
+    `&lon=${encodeURIComponent(lon)}&limit=1&appid=${encodeURIComponent(apiKey)}`;
+  try {
+    const res = await axios.get(url, { timeout: 10000, validateStatus: () => true });
+    const row = Array.isArray(res.data) ? res.data[0] : null;
+    if (!row || typeof row.name !== 'string') return null;
+    return {
+      cityName: row.name.trim(),
+      countryCode: typeof row.country === 'string' ? row.country.trim() : null,
+      state: typeof row.state === 'string' ? row.state.trim() : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function parseOpenWeatherPayload(data) {
   if (data.cod === 401 || data.cod === '401') {
     const err = new Error(
@@ -39,8 +106,10 @@ function parseOpenWeatherPayload(data) {
   const main = data.main || {};
   const rain1h = data.rain && typeof data.rain['1h'] === 'number' ? data.rain['1h'] : 0;
   const w0 = Array.isArray(data.weather) && data.weather[0] ? data.weather[0] : {};
-  const temperature = typeof main.temp === 'number' ? main.temp : 0;
-  const humidity = typeof main.humidity === 'number' ? main.humidity : 0;
+  const temperature =
+    typeof main.temp === 'number' ? Math.round(main.temp * 10) / 10 : 0;
+  const humidity =
+    typeof main.humidity === 'number' ? Math.round(main.humidity) : 0;
 
   const weatherDetails = {
     cityName: typeof data.name === 'string' ? data.name : null,
@@ -75,7 +144,7 @@ function parseOpenWeatherPayload(data) {
   };
 }
 
-async function openWeatherGet(apiKey, url) {
+async function openWeatherGet(apiKey, url, { lat, lon } = {}) {
   let data;
   try {
     const res = await axios.get(url, { timeout: 15000, validateStatus: () => true });
@@ -86,7 +155,41 @@ async function openWeatherGet(apiKey, url) {
     err.code = 'OPENWEATHER_HTTP';
     throw err;
   }
-  return parseOpenWeatherPayload(data);
+  const parsed = parseOpenWeatherPayload(data);
+
+  const coordLat = lat ?? parsed.weatherDetails?.coordinates?.lat;
+  const coordLon = lon ?? parsed.weatherDetails?.coordinates?.lon;
+  if (Number.isFinite(coordLat) && Number.isFinite(coordLon)) {
+    const [geo, rainfallAnnual, meteoCurrent] = await Promise.all([
+      reverseGeocodeCity(apiKey, coordLat, coordLon),
+      fetchAnnualRainfallEstimate(coordLat, coordLon),
+      fetchOpenMeteoCurrent(coordLat, coordLon),
+    ]);
+    if (geo?.cityName) {
+      parsed.weatherDetails.cityName = geo.cityName;
+      if (geo.countryCode) parsed.weatherDetails.countryCode = geo.countryCode;
+      if (geo.state) parsed.weatherDetails.state = geo.state;
+    }
+    if (meteoCurrent) {
+      parsed.temperature = meteoCurrent.temperature;
+      parsed.humidity = meteoCurrent.humidity;
+      parsed.weatherDetails.main.temp = meteoCurrent.temperature;
+      parsed.weatherDetails.main.humidity = meteoCurrent.humidity;
+      parsed.weatherDetails.observedAt = meteoCurrent.observedAt;
+      parsed.weatherDetails.weatherSource = 'open-meteo';
+    } else {
+      parsed.weatherDetails.weatherSource = 'openweather';
+    }
+    if (typeof rainfallAnnual === 'number' && Number.isFinite(rainfallAnnual)) {
+      parsed.rainfall = rainfallAnnual;
+      parsed.weatherDetails.rain = {
+        mm1h: parsed.weatherDetails.rain?.mm1h ?? 0,
+        annualEstimate: rainfallAnnual,
+      };
+    }
+  }
+
+  return parsed;
 }
 
 /**
@@ -109,7 +212,7 @@ async function fetchWeather(apiKey, city, countryCode = 'PK') {
 async function fetchWeatherByCoords(apiKey, lat, lon) {
   const key = requireApiKey(apiKey);
   const url = `https://api.openweathermap.org/data/2.5/weather?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}&appid=${encodeURIComponent(key)}&units=metric`;
-  return openWeatherGet(key, url);
+  return openWeatherGet(key, url, { lat, lon });
 }
 
 module.exports = { fetchWeather, fetchWeatherByCoords, pickOpenWeatherKey, envOpenWeatherKey };

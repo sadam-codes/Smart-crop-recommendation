@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { api } from './lib/api.js'
+import { api, isNetworkFetchError, NETWORK_ERROR_MESSAGE } from './lib/api.js'
 import {
   hasLiveWeatherPreview,
   isSoilValid,
@@ -64,6 +64,8 @@ export default function App() {
 
   /** OpenWeather snapshot when using Live API (before predict). */
   const [liveWeatherPreview, setLiveWeatherPreview] = useState(null)
+  /** Frozen on leaving step 2 so step 3 submit does not lose weather/location. */
+  const [weatherSnapshot, setWeatherSnapshot] = useState(/** @type {null | { geoLat: number, geoLon: number, city: string, countryCode: string, liveWeather: object }} */ (null))
 
   const wf = weatherFields({
     geoLat,
@@ -75,11 +77,18 @@ export default function App() {
     rainfall,
   })
 
+  const activeLiveWeather =
+    step >= 3 && weatherSnapshot?.liveWeather ? weatherSnapshot.liveWeather : liveWeatherPreview
+  const activeCity = step >= 3 && weatherSnapshot ? weatherSnapshot.city : city
+  const activeCountryCode = step >= 3 && weatherSnapshot ? weatherSnapshot.countryCode : countryCode
+  const activeGeoLat = step >= 3 && weatherSnapshot ? weatherSnapshot.geoLat : geoLat
+  const activeGeoLon = step >= 3 && weatherSnapshot ? weatherSnapshot.geoLon : geoLon
+
   const detectedLocationLabel =
-    liveWeatherPreview?.cityName != null
-      ? `${liveWeatherPreview.cityName}${liveWeatherPreview.countryCode ? `, ${liveWeatherPreview.countryCode}` : ''}`
-      : city.trim()
-        ? `${city.trim()}${countryCode.trim() ? `, ${countryCode.trim().toUpperCase()}` : ''}`
+    activeLiveWeather?.cityName != null
+      ? `${activeLiveWeather.cityName}${activeLiveWeather.countryCode ? `, ${activeLiveWeather.countryCode}` : ''}`
+      : activeCity.trim()
+        ? `${activeCity.trim()}${activeCountryCode.trim() ? `, ${activeCountryCode.trim().toUpperCase()}` : ''}`
         : ''
 
   const locationStatus =
@@ -97,13 +106,16 @@ export default function App() {
   const weatherErr = weatherErrors(weatherMode, wf, { showErrors: weatherHighlightRequired })
 
   const soilComplete = isSoilValid(N, P, K, ph)
-  const weatherComplete = isWeatherStepValid(weatherMode, wf)
+  const weatherComplete =
+    step === 3 && weatherMode === 'api' && weatherSnapshot
+      ? hasLiveWeatherPreview(weatherSnapshot.liveWeather)
+      : isWeatherStepValid(weatherMode, wf)
 
   const refreshStatus = useCallback(() => {
     api('/api/status')
       .then((r) => r.json())
       .then(setStatus)
-      .catch(() => setStatus({ ready: false, error: 'Network error' }))
+      .catch(() => setStatus({ ready: false, error: 'API offline' }))
   }, [])
 
   useEffect(() => {
@@ -125,12 +137,21 @@ export default function App() {
     }
   }, [weatherMode, geoLat, geoLon, geoError, liveWeatherPreview, temperature, humidity, rainfall, weatherHighlightRequired])
 
-  /** Live API: browser geolocation on weather step. */
+  /** Live API: browser geolocation — only on step 2 (step 3 keeps snapshot). */
   useEffect(() => {
-    if (weatherMode !== 'api' || step < 2) {
+    if (weatherMode !== 'api') {
       setGeoLat(null)
       setGeoLon(null)
       setGeoError(null)
+      return
+    }
+    if (step < 2) {
+      setGeoLat(null)
+      setGeoLon(null)
+      setGeoError(null)
+      return
+    }
+    if (step > 2) {
       return
     }
 
@@ -141,6 +162,7 @@ export default function App() {
     setLiveWeatherPreview(null)
     setCity('')
     setCountryCode('')
+    setWeatherSnapshot(null)
 
     ;(async () => {
       try {
@@ -159,14 +181,12 @@ export default function App() {
     }
   }, [step, weatherMode, geoAttempt])
 
-  /** Live API: fetch weather for coords → preview grid + city name. */
+  /** Live API: fetch weather for coords → preview grid + city name (step 2 only). */
   useEffect(() => {
-    if (weatherMode !== 'api' || step < 2) {
-      setLiveWeatherPreview(null)
+    if (weatherMode !== 'api' || step !== 2) {
       return
     }
     if (!Number.isFinite(geoLat) || !Number.isFinite(geoLon)) {
-      setLiveWeatherPreview(null)
       return
     }
 
@@ -237,6 +257,7 @@ export default function App() {
     setGeoError(null)
     setGeoAttempt(0)
     setLiveWeatherPreview(null)
+    setWeatherSnapshot(null)
     setPredictionError(null)
     setResult(null)
   }
@@ -322,11 +343,23 @@ export default function App() {
     }
     if (step === 2) {
       if (!validateWeatherForNext()) return
+      if (weatherMode === 'api' && hasLiveWeatherPreview(liveWeatherPreview)) {
+        setWeatherSnapshot({
+          geoLat,
+          geoLon,
+          city,
+          countryCode,
+          liveWeather: liveWeatherPreview,
+        })
+      } else {
+        setWeatherSnapshot(null)
+      }
       setStep(3)
     }
   }
 
   function goBack() {
+    if (step === 3) setWeatherSnapshot(null)
     if (step > 1) setStep((s) => s - 1)
   }
 
@@ -357,8 +390,17 @@ export default function App() {
     const body = { N: n, P: p, K: k, ph: phVal }
 
     if (weatherMode === 'api') {
-      body.lat = geoLat
-      body.lon = geoLon
+      const snap = weatherSnapshot
+      const lw = snap?.liveWeather ?? liveWeatherPreview
+      body.lat = snap?.geoLat ?? geoLat
+      body.lon = snap?.geoLon ?? geoLon
+      if (snap?.city) body.city = snap.city
+      if (snap?.countryCode) body.countryCode = snap.countryCode
+      if (hasLiveWeatherPreview(lw)) {
+        body.temperature = lw.temperature
+        body.humidity = lw.humidity
+        body.rainfall = lw.rainfall
+      }
     } else {
       body.temperature = parseNum(temperature)
       body.humidity = parseNum(humidity)
@@ -388,7 +430,7 @@ export default function App() {
         id: 'predict-ok',
       })
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
+      const msg = isNetworkFetchError(err) ? NETWORK_ERROR_MESSAGE : err instanceof Error ? err.message : String(err)
       setPredictionError({ message: msg })
       toast.error('Request failed', { description: msg, id: 'predict-net' })
     } finally {
@@ -440,6 +482,7 @@ export default function App() {
                 setWeatherMode={setWeatherMode}
                 locationStatus={locationStatus}
                 detectedLocation={detectedLocationLabel}
+                liveWeatherPreview={liveWeatherPreview}
                 onRetryLocation={retryLocation}
                 temperature={temperature}
                 setTemperature={setTemperature}
@@ -480,7 +523,9 @@ export default function App() {
                     <dt className="text-[10px] font-semibold uppercase tracking-wide text-stone-500">Weather</dt>
                     <dd className="font-semibold text-slate-800">
                       {weatherMode === 'api'
-                        ? `${detectedLocationLabel || '—'} · Live API`
+                        ? hasLiveWeatherPreview(activeLiveWeather)
+                          ? `${detectedLocationLabel || '—'} · ${activeLiveWeather.temperature} °C · ${activeLiveWeather.humidity}% humidity · ${activeLiveWeather.rainfall} mm rainfall (12 mo est.)`
+                          : `${detectedLocationLabel || '—'} · Live API`
                         : `${temperature || '—'} °C · ${humidity || '—'}% humidity · ${rainfall || '—'} mm rainfall`}
                     </dd>
                   </div>
@@ -544,7 +589,9 @@ export default function App() {
                 temperature,
                 humidity,
                 rainfall,
-                liveWeather: liveWeatherPreview,
+                liveWeather: activeLiveWeather,
+                geoLat: activeGeoLat,
+                geoLon: activeGeoLon,
               }}
               errorMessage={showError ? predictionError.message : null}
               onTryAgain={resetForm}
